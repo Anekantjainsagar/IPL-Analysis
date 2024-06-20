@@ -3,10 +3,11 @@ from flask_cors import CORS
 import pickle
 import requests
 from bs4 import BeautifulSoup   
-from flask_mysqldb import MySQL
 from flask_sqlalchemy import SQLAlchemy
 from dotenv import load_dotenv
 import os
+import psycopg2
+
 load_dotenv()
 
 app = Flask(__name__)
@@ -16,19 +17,36 @@ df = pickle.load(open('df.pkl', 'rb'))
 teams = pickle.load(open('teams.pkl', 'rb'))
 seasons = pickle.load(open('season.pkl', 'rb'))
 
-app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv("URI")
-
-# mysql = MySQL(app)
-db = SQLAlchemy(app)
-
-class Task(db.Model):
-    __tablename__  = "Player_img"
-    id = db.Column(db.Integer, primary_key=True,autoincrement=True)
-    name = db.Column(db.String,nullable=False)
-    img = db.Column(db.String,nullable=False)
+def get_connection():
+    try:
+        return psycopg2.connect(
+            database=os.getenv("DB"),
+            user=os.getenv('USER'),
+            password=os.getenv("PASSWORD"),
+            host=os.getenv("HOST"),
+            port=os.getenv('PORT'),
+        )
+    except Exception as e:
+        print(f"Error connecting to database: {e}")
+        return None
+conn = get_connection()
+if conn:
+    print("Connection to the PostgreSQL established successfully.")
+else:
+    print("Connection to the PostgreSQL encountered and error.")
     
+table_name = "Player_img"
+
 with app.app_context():
-    db.create_all()
+    curr = conn.cursor()
+    curr.execute(f'''
+        CREATE TABLE IF NOT EXISTS {table_name} (
+            name VARCHAR(1000) PRIMARY KEY,
+            img VARCHAR(2000)
+        );
+    ''')
+    conn.commit()
+    curr.close()
 
 @app.route('/get_teams')
 def get_teams():
@@ -252,47 +270,21 @@ def overall_analysis():
         'most_wickets': most_wickets,
     })
 
-# @app.route('/get_img')
-# def get_img():
-#     player = request.args.get('player')
-#     player = str(player.lower())
-    
-#     curr = mysql.connection.cursor()
-#     curr.execute(f"SELECT * from players where name = '{player}'")
-#     data = curr.fetchone()
-    
-#     if data:
-#         return jsonify({'images': data[1]})
-#     else:
-#         player_name = player.replace(" ", "+") + '+ ipl high quality'
-#         headers={'User-Agent':'Mozilla/5.0 (Windows NT 6.3; Win 64 ; x64) Apple WeKit /537.36(KHTML , like Gecko) Chrome/80.0.3987.162 Safari/537.36'}
-#         url = f"https://www.google.com/search?sca_esv=94d2d025c9ea360a&rlz=1C1UEAD_enIN1078IN1078&sxsrf=ACQVn0-Wm8U_89QVRKrlLpLlHiEslt0JzA:1711351590733&q={player_name}&uds=AMwkrPsOnkftQ-1HCG5-ibbcg4vTHSPyLAm-mLnbp3Y_o1QkRIVN-VarmVLzFcaQBuZTdgN_p0l7Oklg3-7ggYon9JMNzDTMoRbVow9vxOgrPVpA7TVL9yy-AbrVbdQNIfpjNWgSNHMMWuy3aTHINyd9WTXSWC8GkmmB57Elr9u8JxIHyBLg_GRPkIOrISLPPUdGRn61Uih2b_EOPX3s0WkhMNAYYb-99Q7FTZmmJDtKLOm-0Bvd1etJipPvdszPz9cLconDlDoXbZ6rPzIaF6ezjqzq0aYGRvjrDYJ-N8ck94Lg4GCWPAc&udm=2&prmd=invmsbtz&sa=X&ved=2ahUKEwjb0pq98Y6FAxXfRmcHHZIQAxkQtKgLegQICxAB&biw=1536&bih=742&dpr=1.25"
-        
-#         data = requests.get(url, headers=headers).text
-#         soup = BeautifulSoup(data, 'lxml')
-#         images = soup.find_all('img')
-#         finals = []
-#         for img in images:
-#             if(img['src'].find('https')>-1):
-#                 finals.append(img['src'])
-#         img = finals[0]
-        
-#         curr.execute(f"INSERT INTO players (name, img) VALUES ('{player}', '{img}')")
-#         mysql.connection.commit()
-#         curr.close()
-        
-#         return jsonify({'images': img})
 
 @app.route('/get_img')
 def get_img():
     player = request.args.get('player')
     player = str(player.lower())
     
-    data = Task.query.filter_by(name=player).first()
-    print(data)
+    curr = conn.cursor()
+    
+    query = f'SELECT * FROM {table_name} WHERE name = %s;'
+    curr.execute(query, (player,))
+    data = curr.fetchone()
+    curr.close()
     
     if data:
-        return jsonify({'images': data.img})
+        return jsonify({'images': data[2]})
     else:
         player_name = player.replace(" ", "+") + '+ ipl high quality'
         headers={'User-Agent':'Mozilla/5.0 (Windows NT 6.3; Win 64 ; x64) Apple WeKit /537.36(KHTML , like Gecko) Chrome/80.0.3987.162 Safari/537.36'}
@@ -307,9 +299,14 @@ def get_img():
                 finals.append(img['src'])
         img = finals[0]
         
-        new_item = Task(name=player, img=img)
-        db.session.add(new_item)
-        db.session.commit()
+        curr = conn.cursor()
+        curr.execute(f'''
+            INSERT INTO {table_name} (name, img)
+            VALUES (%s, %s)
+            RETURNING id;
+        ''', (player, img))
+        conn.commit()
+        curr.close()
         
         return jsonify({'images': img})
  
